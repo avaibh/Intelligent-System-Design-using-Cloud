@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Automatic Spam Tagging'
+Parameters:
+  EndPoint:
+    Description: Prediction endpoint to classify the emails as spam/ham
+    Type: String
+
+Resources:
+  LambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonSESFullAccess
+        - arn:aws:iam::aws:policy/AmazonSageMakerFullAccess
+      Path: /
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Main lambda making classfication for spam email
+      Handler: index.handler
+      Runtime: python3.6
+      Layers: 
+        - arn:aws:lambda:us-east-1:668099181075:layer:AWSLambda-Python36-SciPy1x:12
+      Role: !GetAtt 'LambdaIAMRole.Arn'
+      Timeout: 240
+      Environment:
+        Variables:
+          SageMakerEndPoint: !Ref EndPoint
+      Code: 
+        S3Bucket: spam-lambda
+        S3Key: spam-lambda-key
+
+  StoreBucketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:invokeFunction
+      SourceAccount: !Ref 'AWS::AccountId'
+      FunctionName: !Ref 'LambdaFunction'
+      SourceArn: !GetAtt StoreBucket.Arn
+      Principal: s3.amazonaws.com
+
+  StoreBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: LambdaFunction
+
+  ReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: 'ReceiptRuleSet'
+
+  ReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    Properties:
+      RuleSetName: !Ref ReceiptRuleSet
+      Rule:
+        Enabled: true
+        Actions:
+          - S3Action:
+              BucketName: !Ref StoreBucket
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StoreBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowSESPuts
+            Effect: Allow
+            Principal:
+              Service: 'ses.amazonaws.com'
+            Action: 's3:PutObject'
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref StoreBucket
+                - /*
+
+  ApplyNotificationFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: S3BucketNotificationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowBucketNotification
+                Effect: Allow
+                Action: s3:PutBucketNotification
+                Resource:
+                  - !Sub 'arn:aws:s3:::${StoreBucket}'
+                  - !Sub 'arn:aws:s3:::${StoreBucket}/*'
+
+  ApplyBucketNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Apply bucket notification
+      Handler: index.handler
+      Runtime: python2.7
+      Role: !GetAtt 'ApplyNotificationFunctionRole.Arn'
+      Timeout: 240
+      Code:
+        ZipFile: |
+          import boto3
+          import logging
+          import json
+          import cfnresponse
+
+          s3Client = boto3.client('s3')
+          logger = logging.getLogger()
+          logger.setLevel(logging.DEBUG)
+
+          def addBucketNotification(bucketName, notificationId, functionArn):
+            notificationResponse = s3Client.put_bucket_notification_configuration(
+              Bucket=bucketName,
+              NotificationConfiguration={
+                'LambdaFunctionConfigurations': [
+                  {
+                    'Id': notificationId,
+                    'LambdaFunctionArn': functionArn,
+                    'Events': [
+                      's3:ObjectCreated:*'
+                    ]
+                  },
+                ]
+              }
+            )
+            return notificationResponse
+
+          def create(properties, physical_id):
+            bucketName = properties['S3Bucket']
+            notificationId = properties['NotificationId']
+            functionArn = properties['FunctionARN']
+            response = addBucketNotification(bucketName, notificationId, functionArn)
+            logger.info('AddBucketNotification response: %s' % json.dumps(response))
+            return cfnresponse.SUCCESS, physical_id
+
+          def update(properties, physical_id):
+            return cfnresponse.SUCCESS, None
+
+          def delete(properties, physical_id):
+            return cfnresponse.SUCCESS, None
+
+          def handler(event, context):
+            logger.info('Received event: %s' % json.dumps(event))
+
+            status = cfnresponse.FAILED
+            new_physical_id = None
+
+            try:
+              properties = event.get('ResourceProperties')
+              physical_id = event.get('PhysicalResourceId')
+
+              status, new_physical_id = {
+                'Create': create,
+                'Update': update,
+                'Delete': delete
+              }.get(event['RequestType'], lambda x, y: (cfnresponse.FAILED, None))(properties, physical_id)
+            except Exception as e:
+              logger.error('Exception: %s' % e)
+              status = cfnresponse.FAILED
+            finally:
+              cfnresponse.send(event, context, status, {}, new_physical_id)
+
+  ApplyNotification:
+    Type: Custom::ApplyNotification
+    Properties:
+      ServiceToken: !GetAtt 'ApplyBucketNotificationFunction.Arn'
+      S3Bucket: !Ref 'StoreBucket'
+      FunctionARN: !GetAtt 'LambdaFunction.Arn'
+      NotificationId: S3ObjectCreatedEvent
