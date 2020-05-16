@@ -6,7 +6,7 @@
 #### Amazon Sagemaker, AWS S3, AWS Lambda , Route 53 and AWS SES
 
 ## ARCHITECHTURE 
-![alt text](https://github.com/im-vaibhav/Intelligent-System-Design-using-Cloud/blob/master/images/SpamEndpoint-designer.png)
+![alt text](https://github.com/im-vaibhav/Intelligent-System-Design-using-Cloud/blob/master/images/architecture-designer.png)
 
 ## SAMPLE OUTPUT 
 ### Prediction email
