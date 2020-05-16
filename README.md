@@ -9,7 +9,7 @@
 ![alt text](https://github.com/im-vaibhav/Intelligent-System-Design-using-Cloud/blob/master/images/SpamEndpoint-designer.png)
 
 ## SAMPLE OUTPUT 
-### Known Visitor 
+### Prediction email
 The sender recieves an email with reasonable predictions about spam/not spam
 ![alt text](https://github.com/im-vaibhav/Intelligent-System-Design-using-Cloud/blob/master/images/spam_notify_email.png)
 
